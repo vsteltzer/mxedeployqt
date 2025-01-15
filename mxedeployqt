@@ -117,39 +117,53 @@ def copy_qtplugins(qmake, qtplugins, target, skip):
 
 def copy_qmlmodules(qmake, qmlimportscanner, qmlrootpath, qmlmodules, target, skip):
     '''Copy the qmlmodules to the target.
-    If qmlmodules is not provided, try try to autodetect all the imported modules in qmlrootpath.
-    If module detection isn't possible, copy all available qml modules'''
-    if (qmlrootpath == None or len(qmlrootpath) == 0 or not os.path.exists(qmlrootpath)) and qmlmodules == None:
+    If qmlmodules is not provided, try to autodetect all the imported modules in qmlrootpath.
+    If module detection isn't possible, copy all available qml modules.'''
+    if (qmlrootpath is None or len(qmlrootpath) == 0 or not os.path.exists(qmlrootpath)) and qmlmodules is None:
         logging.warning("No qmlmodules are specified and Invalid qmlrootpath provided: " + str(qmlrootpath))
         return False
 
     qt_install_qml = getoutput(qmake + " -query QT_INSTALL_QML")
-    if qt_install_qml:
-        logging.info("Copying qml plugins from: " + qt_install_qml)
-
-        used_qmlimports = json.loads(getoutput(qmlimportscanner + " -rootPath " + qmlrootpath + " -importPath " + qt_install_qml))
-
-        used_qmlmodules = {}
-        for i in used_qmlimports:
-            if i["type"] == "module" and "path" in i and (qmlmodules is None or i["name"] in qmlmodules):
-                used_qmlmodules[os.path.abspath(i["path"])] = os.path.join(target, os.path.relpath(i["path"], qt_install_qml))
-                #QTBUG-48424, QTBUG-45977: In release mode, qmlimportscanner does not report
-                #the dependency of QtQuick.Controls on QtQuick.PrivateWidgets due to missing files.
-                #Recreate the run-time logic here as best as we can - deploy it if
-                #      1) QtWidgets is used
-                #      2) QtQuick.Controls is used
-                if i["name"] == "QtQuick.Controls":
-                    used_qmlmodules[os.path.abspath(os.path.join(i["path"], ".." ,"PrivateWidgets"))] = os.path.join(target, "QtQuick/PrivateWidgets")
-
-        #Only copy the outermost directory when there are nested directories
-        sorted_modules = sorted(used_qmlmodules.keys(), key=lambda x: (x, len(x)))
-        copied_dirs = set()
-        for module_source in sorted_modules:
-            if os.path.abspath(os.path.join(module_source, os.pardir)) not in copied_dirs:
-                copy_dir(module_source, used_qmlmodules[module_source], skip)
-            copied_dirs.add(module_source)
-    else:
+    if not qt_install_qml:
         logging.error("Unable to retrieve QT_INSTALL_QMLS from qmake")
+        return False
+
+    logging.info("Copying qml plugins from: " + qt_install_qml)
+
+    used_qmlmodules = {}
+
+    if qmlimportscanner:
+        try:
+            used_qmlimports = json.loads(getoutput(qmlimportscanner + " -rootPath " + qmlrootpath + " -importPath " + qt_install_qml))
+            for i in used_qmlimports:
+                if i["type"] == "module" and "path" in i and (qmlmodules is None or i["name"] in qmlmodules):
+                    used_qmlmodules[os.path.abspath(i["path"])] = os.path.join(target, os.path.relpath(i["path"], qt_install_qml))
+                    # QTBUG-48424, QTBUG-45977: Handle missing dependencies for QtQuick.Controls
+                    if i["name"] == "QtQuick.Controls":
+                        used_qmlmodules[os.path.abspath(os.path.join(i["path"], "..", "PrivateWidgets"))] = os.path.join(target, "QtQuick/PrivateWidgets")
+        except Exception as e:
+            logging.error(f"Error while using qmlimportscanner: {e}")
+            return False
+    else:
+        # If qmlimportscanner is None, use the provided qmlmodules list
+        if qmlmodules:
+            for module in qmlmodules:
+                module_path = os.path.join(qt_install_qml, module)
+                if os.path.exists(module_path):
+                    used_qmlmodules[module_path] = os.path.join(target, module)
+                else:
+                    logging.warning(f"Module path does not exist: {module_path}")
+        else:
+            logging.error("qmlimportscanner is None, and no qmlmodules are provided.")
+            return False
+
+    # Only copy the outermost directory when there are nested directories
+    sorted_modules = sorted(used_qmlmodules.keys(), key=lambda x: (x, len(x)))
+    copied_dirs = set()
+    for module_source in sorted_modules:
+        if os.path.abspath(os.path.join(module_source, os.pardir)) not in copied_dirs:
+            copy_dir(module_source, used_qmlmodules[module_source], skip)
+        copied_dirs.add(module_source)
 
     return True
 
